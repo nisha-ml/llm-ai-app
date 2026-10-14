@@ -1,167 +1,219 @@
 import { create } from 'zustand';
-import { createMMKV } from 'react-native-mmkv';
 import { Message, ChatThread } from '../types/chat';
-
-export const storage = createMMKV({ id: 'chat-storage' });
-
-const THREADS_KEY = 'chat.threads';
-const messagesKey = (threadId: string) => `chat.messages.${threadId}`;
-
-function loadThreads(): ChatThread[] {
-  const raw = storage.getString(THREADS_KEY);
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw) as ChatThread[];
-  } catch {
-    return [];
-  }
-}
-
-function persistThreads(threads: ChatThread[]) {
-  storage.set(THREADS_KEY, JSON.stringify(threads));
-}
-
-function loadMessages(threadId: string): Message[] {
-  const raw = storage.getString(messagesKey(threadId));
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw) as Message[];
-  } catch {
-    return [];
-  }
-}
-
-function persistMessages(threadId: string, messages: Message[]) {
-  storage.set(messagesKey(threadId), JSON.stringify(messages));
-}
+import { API_URL } from '../screens/LoginScreen';
+import { getToken, loadSession } from '../utils/authStorage';
 
 function createId() {
   return Date.now().toString() + Math.random().toString(36).slice(2, 6);
 }
 
-interface ChatState {
+// Every backend call goes through here: it adds the logged-in user's token
+// and throws if the server says no (so we never save "empty" threads).
+async function api(path: string, options: RequestInit = {}) {
+  await loadSession(); // make sure the saved token has been read
+  const token = getToken();
+  const res = await fetch(`${API_URL}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...((options.headers as Record<string, string>) || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`${options.method || 'GET'} ${path} failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
+const toThread = (t: any): ChatThread => ({
+  id: t.id,
+  title: t.title,
+  createdAt: Number(t.created_at),
+  updatedAt: Number(t.updated_at),
+});
+
+export interface ChatState {
   threads: ChatThread[];
   activeThreadId: string | null;
   messages: Message[];
   isStreaming: boolean;
+  isLoading: boolean;
 
-  createThread: () => void;
-  switchThread: (id: string) => void;
-  deleteThread: (id: string) => void;
-  renameThread: (id: string, title: string) => void;
+  fetchThreads: () => Promise<void>;
+  createThread: () => Promise<void>;
+  switchThread: (id: string) => Promise<void>;
+  deleteThread: (id: string) => Promise<void>;
+  renameThread: (id: string, title: string) => Promise<void>;
 
-  addMessage: (msg: Message) => void;
+  addMessage: (msg: Message) => Promise<void>;
   updateLastMessage: (chunk: string) => void;
-  finalizeLastMessage: () => void;
+  finalizeLastMessage: () => Promise<void>;
   setStreaming: (value: boolean) => void;
 }
 
-export const useChatStore = create<ChatState>((set, get) => {
-  // On first load: restore threads, or create a first thread if none exist.
-  let threads = loadThreads();
-  let activeThreadId = threads[0]?.id ?? null;
+export const useChatStore = create<ChatState>()((set, get) => ({
+  threads: [],
+  activeThreadId: null,
+  messages: [],
+  isStreaming: false,
+  isLoading: false,
 
-  if (threads.length === 0) {
+  fetchThreads: async () => {
+    set({ isLoading: true });
+    try {
+      const data = await api('/threads');
+      const formattedThreads: ChatThread[] = data.map(toThread);
+
+      if (formattedThreads.length > 0) {
+        const firstThreadId = formattedThreads[0].id;
+        set({ threads: formattedThreads, activeThreadId: firstThreadId });
+        await get().switchThread(firstThreadId);
+      } else {
+        set({ threads: [], activeThreadId: null, messages: [] });
+        await get().createThread();
+      }
+    } catch (err) {
+      console.error('Failed to fetch threads:', err);
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  createThread: async () => {
     const id = createId();
-    const now = Date.now();
-    threads = [{ id, title: 'New Chat', createdAt: now, updatedAt: now }];
-    activeThreadId = id;
-    persistThreads(threads);
-  }
+    try {
+      // Only add the thread to the screen after the server has really saved it
+      const t = await api('/threads', {
+        method: 'POST',
+        body: JSON.stringify({ id, title: 'New Chat' }),
+      });
+      set({
+        threads: [toThread(t), ...get().threads],
+        activeThreadId: t.id,
+        messages: [],
+      });
+    } catch (err) {
+      console.error('Failed to create thread:', err);
+    }
+  },
 
-  return {
-    threads,
-    activeThreadId,
-    messages: activeThreadId ? loadMessages(activeThreadId) : [],
-    isStreaming: false,
+  switchThread: async (id: string) => {
+    set({ activeThreadId: id, messages: [] });
+    try {
+      const data = await api(`/threads/${id}/messages`);
+      const formattedMessages: Message[] = data.map((m: any) => ({
+        id: m.id,
+        text: m.text,
+        sender: m.sender,
+        timestamp: Number(m.timestamp),
+        imageUri: m.image_uri || undefined,
+      }));
+      // ignore the result if the user already switched to another chat
+      if (get().activeThreadId === id) set({ messages: formattedMessages });
+    } catch (err) {
+      console.error('Failed to fetch messages:', err);
+    }
+  },
 
-    createThread: () => {
-      const id = createId();
-      const now = Date.now();
-      const newThread: ChatThread = { id, title: 'New Chat', createdAt: now, updatedAt: now };
-      const updatedThreads = [newThread, ...get().threads];
-      persistThreads(updatedThreads);
-      set({ threads: updatedThreads, activeThreadId: id, messages: [] });
-    },
+  deleteThread: async (id: string) => {
+    try {
+      await api(`/threads/${id}`, { method: 'DELETE' });
 
-    switchThread: (id) => {
-      const msgs = loadMessages(id);
-      set({ activeThreadId: id, messages: msgs });
-    },
-
-    deleteThread: (id) => {
-      const remaining = get().threads.filter((t) => t.id !== id);
-      storage.remove(messagesKey(id));
-      persistThreads(remaining);
-
+      const remaining = get().threads.filter((t: ChatThread) => t.id !== id);
       if (get().activeThreadId === id) {
         if (remaining.length > 0) {
-          set({
-            threads: remaining,
-            activeThreadId: remaining[0].id,
-            messages: loadMessages(remaining[0].id),
-          });
+          set({ threads: remaining });
+          await get().switchThread(remaining[0].id);
         } else {
-          const newId = createId();
-          const now = Date.now();
-          const fresh: ChatThread = { id: newId, title: 'New Chat', createdAt: now, updatedAt: now };
-          persistThreads([fresh]);
-          set({ threads: [fresh], activeThreadId: newId, messages: [] });
+          set({ threads: [], messages: [], activeThreadId: null });
+          await get().createThread();
         }
       } else {
         set({ threads: remaining });
       }
-    },
+    } catch (err) {
+      console.error('Failed to delete thread:', err);
+    }
+  },
 
-    renameThread: (id, title) => {
-      const updated = get().threads.map((t) => (t.id === id ? { ...t, title } : t));
-      persistThreads(updated);
+  renameThread: async (id: string, title: string) => {
+    try {
+      await api(`/threads/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ title }),
+      });
+
+      const updated = get().threads.map((t: ChatThread) =>
+        t.id === id ? { ...t, title } : t
+      );
       set({ threads: updated });
-    },
+    } catch (err) {
+      console.error('Failed to rename thread:', err);
+    }
+  },
 
-    addMessage: (msg) => {
-      const threadId = get().activeThreadId;
-      if (!threadId) return;
-      const updated = [...get().messages, msg];
-      set({ messages: updated });
-      persistMessages(threadId, updated);
+  addMessage: async (msg: Message) => {
+    const threadId = get().activeThreadId;
+    if (!threadId) return;
 
-      // Auto-title the thread from the first user message.
-      const thread = get().threads.find((t) => t.id === threadId);
-      if (thread && thread.title === 'New Chat' && msg.sender === 'user') {
+    set({ messages: [...get().messages, msg] });
+
+    try {
+      await api(`/threads/${threadId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({
+          id: msg.id,
+          text: msg.text,
+          sender: msg.sender,
+          timestamp: msg.timestamp,
+          imageUri: msg.imageUri || null,
+        }),
+      });
+
+      // Name the chat after the first user message
+      const currentThread = get().threads.find((t: ChatThread) => t.id === threadId);
+      if (currentThread && currentThread.title === 'New Chat' && msg.sender === 'user') {
         const title = msg.text.slice(0, 30) || 'New Chat';
-        get().renameThread(threadId, title);
+        await get().renameThread(threadId, title);
       }
-    },
+    } catch (err) {
+      console.error('Failed to persist message:', err);
+    }
+  },
 
-    updateLastMessage: (chunk) => {
-      const threadId = get().activeThreadId;
-      if (!threadId) return;
-      const updated = [...get().messages];
-      if (updated.length > 0) {
-        updated[updated.length - 1] = {
-          ...updated[updated.length - 1],
-          text: updated[updated.length - 1].text + chunk,
-        };
-      }
-      set({ messages: updated });
-      persistMessages(threadId, updated);
-    },
+  updateLastMessage: (chunk: string) => {
+    const messages = [...get().messages];
+    if (messages.length === 0) return;
 
-    finalizeLastMessage: () => {
-      const threadId = get().activeThreadId;
-      if (!threadId) return;
-      const updated = [...get().messages];
-      if (updated.length > 0) {
-        updated[updated.length - 1] = {
-          ...updated[updated.length - 1],
-          isStreaming: false,
-        };
-      }
-      set({ messages: updated });
-      persistMessages(threadId, updated);
-    },
+    const lastIdx = messages.length - 1;
+    messages[lastIdx] = {
+      ...messages[lastIdx],
+      text: messages[lastIdx].text + chunk,
+    };
+    set({ messages });
+  },
 
-    setStreaming: (value) => set({ isStreaming: value }),
-  };
-});
+  finalizeLastMessage: async () => {
+    const messages = [...get().messages];
+    if (messages.length === 0) return;
+
+    const lastMsg = messages[messages.length - 1];
+    messages[messages.length - 1] = {
+      ...lastMsg,
+      isStreaming: false,
+    };
+    set({ messages, isStreaming: false });
+
+    try {
+      await api(`/messages/${lastMsg.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ text: lastMsg.text }),
+      });
+    } catch (err) {
+      console.error('Failed to finalize message:', err);
+    }
+  },
+
+  setStreaming: (value: boolean) => set({ isStreaming: value }),
+}));

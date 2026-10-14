@@ -68,7 +68,7 @@ export const useLLMStream = (): UseLLMStreamReturn => {
             const delta = json.choices?.[0]?.delta?.content;
             if (delta) onChunk(delta);
           } catch {
-            // Ignore partial/incomplete JSON chunks mid-stream.
+       
           }
         }
       }

@@ -12,6 +12,7 @@ import {
 import * as Speech from 'expo-speech';
 import { Message } from '../types/chat';
 import { FormattedMessage } from './FormattedMessage';
+import { formatTime } from '../utils/dateTime';
 
 interface Props {
   message: Message;
@@ -37,7 +38,7 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
   };
 
   if (isUser) {
-    // User message: small rounded grey bubble, right-aligned
+    // User message: small rounded grey bubble, right-aligned, time below
     return (
       <View style={styles.userRow}>
         <View style={styles.userBubble}>
@@ -46,26 +47,28 @@ export const MessageBubble: React.FC<Props> = ({ message }) => {
           )}
           {message.text ? <Text style={styles.userText}>{message.text}</Text> : null}
         </View>
+        <Text style={styles.userTime}>{formatTime(message.timestamp)}</Text>
       </View>
     );
   }
 
-  // AI message: plain text (markdown-formatted), no background, left-aligned, icons below
+  // AI message: plain text (markdown-formatted), no background, left-aligned, icons + time below
   return (
     <View style={styles.aiRow}>
       <FormattedMessage text={message.text} />
       {message.isStreaming && <Text style={styles.cursor}> ▍</Text>}
       <View style={styles.iconRow}>
-      <TouchableOpacity onPress={handleCopy} style={styles.iconButton}>
-        {copied ? <CheckIcon size={15} /> : <CopyIcon size={15} />}
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.iconButton}>
-        <ShareIcon size={15} />
-      </TouchableOpacity>
-      <TouchableOpacity onPress={handleListen} style={styles.iconButton}>
-        <SpeakerIcon size={15} />
-      </TouchableOpacity>
-    </View>
+        <TouchableOpacity onPress={handleCopy} style={styles.iconButton}>
+          {copied ? <CheckIcon size={15} /> : <CopyIcon size={15} />}
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.iconButton}>
+          <ShareIcon size={15} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={handleListen} style={styles.iconButton}>
+          <SpeakerIcon size={15} />
+        </TouchableOpacity>
+        <Text style={styles.aiTime}>{formatTime(message.timestamp)}</Text>
+      </View>
     </View>
   );
 };
@@ -97,6 +100,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 6,
   },
+  userTime: {
+    fontSize: 11,
+    color: '#9ca3af',
+    marginTop: 4,
+    marginRight: 6,
+  },
   aiRow: {
     width: '100%',
     maxWidth: 768,
@@ -115,11 +124,17 @@ const styles = StyleSheet.create({
   },
   iconRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 14,
     marginTop: 10,
   },
   iconButton: {
     padding: 2,
+  },
+  aiTime: {
+    fontSize: 11,
+    color: '#9ca3af',
+    marginLeft: 4,
   },
   iconText: {
     fontSize: 15,
