@@ -1,6 +1,6 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 
-const GROQ_API_KEY = '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';
+const GROQ_API_KEY = process.env.EXPO_PUBLIC_GROQ_API_KEY ?? '';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';

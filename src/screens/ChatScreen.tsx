@@ -6,6 +6,8 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  TouchableOpacity,
+  useWindowDimensions,
 } from 'react-native';
 import { useLLMStream } from '../hooks/useLLMStream';
 import { useChatStore } from '../store/useChatStore';
@@ -13,6 +15,7 @@ import { MessageBubble } from '../components/MessageBubble';
 import { ChatHeader } from '../components/ChatHeader';
 import { ChatDrawer } from '../components/ChatDrawer';
 import { ChatInputBox } from '../components/ChatInputBox';
+import { NotepadPanel } from '../components/NotepadPanel';
 import { buildRagPrompt, searchContext } from '../utils/ragApi';
 import { Message } from '../types/chat';
 import { formatDateLabel, isSameDay } from '../utils/dateTime';
@@ -33,6 +36,9 @@ export const ChatScreen: React.FC<Props> = ({ userName, userEmail, onLogout }) =
   const { streamResponse } = useLLMStream();
   const listRef = useRef<FlatList>(null);
   const [drawerVisible, setDrawerVisible] = useState(false);
+  const [notepadOpen, setNotepadOpen] = useState(false);
+  const { width } = useWindowDimensions();
+  const wide = width >= 900; // wide screen: notepad sits beside the chat; small screen: it slides over it
 
   const handleSend = async (text: string, imageUri?: string) => {
     const userMessage: Message = {
@@ -96,6 +102,7 @@ export const ChatScreen: React.FC<Props> = ({ userName, userEmail, onLogout }) =
 
   return (
     <>
+      <View style={styles.row}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -126,7 +133,23 @@ export const ChatScreen: React.FC<Props> = ({ userName, userEmail, onLogout }) =
         />
 
         <ChatInputBox onSend={handleSend} disabled={isStreaming} threadId={activeThreadId} />
+
+        {/* Notepad button, top right of the chat */}
+        {!wide && !notepadOpen && (
+          <TouchableOpacity style={styles.notepadBtn} onPress={() => setNotepadOpen(true)}>
+            <Text style={styles.notepadBtnText}>📝 Notepad</Text>
+          </TouchableOpacity>
+        )}
       </KeyboardAvoidingView>
+
+      {/* Wide screen: the notepad is always open on the right, the chat stays usable */}
+      {wide && <NotepadPanel docked visible />}
+      </View>
+
+      {/* Small screen: a button opens the notepad over the chat */}
+      {!wide && (
+        <NotepadPanel visible={notepadOpen} onClose={() => setNotepadOpen(false)} />
+      )}
 
       <ChatDrawer
         visible={drawerVisible}
@@ -140,6 +163,22 @@ export const ChatScreen: React.FC<Props> = ({ userName, userEmail, onLogout }) =
 };
 
 const styles = StyleSheet.create({
+  row: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  notepadBtn: {
+    position: 'absolute',
+    top: 14,
+    right: 44,
+    backgroundColor: '#fffdf5',
+    borderWidth: 1,
+    borderColor: '#e7e0c8',
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  notepadBtnText: { color: '#44403c', fontSize: 13, fontWeight: '600' },
   flex: {
     flex: 1,
     backgroundColor: '#ffffff',
